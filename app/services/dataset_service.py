@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -121,18 +122,14 @@ def import_audio(dataset_id: str, file_paths: list[Path]) -> dict:
     d = DATASETS_DIR / dataset_id
     audio_dir = _resolve_audio_dir(d)
     audio_dir.mkdir(exist_ok=True)
-    clips_dir = d / "clips"
-    clips_dir.mkdir(exist_ok=True)
-
     imported = []
     for fp in file_paths:
         if fp.suffix.lower() not in (".wav", ".mp3", ".m4a", ".flac", ".ogg"):
             continue
         dest = audio_dir / Path(fp.name).name
-        shutil.copy2(str(fp), str(dest))
+        if dest.resolve() != fp.resolve():
+            shutil.copy2(str(fp), str(dest))
         imported.append(dest)
-        clips = split_long_audio(dest, clips_dir)
-        imported.extend(clips)
 
     with get_connection() as conn:
         for clip in imported:
@@ -177,6 +174,44 @@ def split_dataset_audios(dataset_id: str, max_duration: int = 12) -> dict:
     return meta
 
 
+def split_single_dataset_audio(dataset_id: str, file_name: str, max_duration: int = 12) -> dict:
+    d = DATASETS_DIR / dataset_id
+    audio_dir = _resolve_audio_dir(d)
+
+    fp = audio_dir / Path(file_name).name
+    if not fp.exists() or not fp.is_file():
+        return {"ok": False, "clip_count": 0}
+
+    # Dividir directamente dentro de wavs para que el stream y la UI los vean.
+    clips = split_long_audio(fp, audio_dir, max_seconds=max_duration)
+
+    # Si no se generaron partes, no tocar el original.
+    if not clips:
+        return {"ok": True, "clip_count": 0}
+
+    if HAS_DB and clips:
+        with get_connection() as conn:
+            # Reemplazar original por las partes en DB.
+            conn.execute(
+                "DELETE FROM dataset_audios WHERE dataset_id = %s AND (stored_name = %s OR original_name = %s)",
+                (int(dataset_id), file_name, file_name),
+            )
+            for clip in clips:
+                info = analyze_audio(clip)
+                conn.execute(
+                    "INSERT INTO dataset_audios (dataset_id, stored_name, original_name, size_bytes, duration_seconds) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (int(dataset_id), clip.name, clip.name, clip.stat().st_size, info["duration"]),
+                )
+
+    # Eliminar el original para que solo queden las partes.
+    try:
+        fp.unlink()
+    except OSError:
+        pass
+
+    return {"ok": True, "clip_count": len(clips)}
+
+
 def list_dataset_audios(dataset_id: str) -> list[dict]:
     if not HAS_DB:
         return []
@@ -185,7 +220,7 @@ def list_dataset_audios(dataset_id: str) -> list[dict]:
             "SELECT id, stored_name, original_name, size_bytes, duration_seconds, created_at FROM dataset_audios WHERE dataset_id = %s ORDER BY created_at DESC",
             (int(dataset_id),),
         ).fetchall()
-        return [
+        items = [
             {
                 "name": r["original_name"],
                 "stored_name": r["stored_name"],
@@ -195,23 +230,40 @@ def list_dataset_audios(dataset_id: str) -> list[dict]:
             }
             for r in rows
         ]
+        part_pattern = re.compile(r"^(.*)_part(\d+)(\.[^.]+)?$", re.IGNORECASE)
+
+        def audio_sort_key(item: dict):
+            name = str(item.get("name") or item.get("stored_name") or "").strip()
+            m = part_pattern.match(name)
+            if m:
+                base = m.group(1).lower()
+                part_num = int(m.group(2))
+                return (0, base, part_num, name.lower())
+            return (1, name.lower(), 0, name.lower())
+
+        items.sort(key=audio_sort_key)
+        return items
 
 
 def delete_dataset_audio(dataset_id: str, file_name: str) -> bool:
     audio_dir = _resolve_audio_dir(DATASETS_DIR / str(dataset_id))
     fp = audio_dir / Path(file_name).name
-    found = False
+    file_deleted = False
     if fp.exists() and fp.is_file():
         fp.unlink()
-        found = True
+        file_deleted = True
 
+    db_deleted = False
     if HAS_DB:
         with get_connection() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "DELETE FROM dataset_audios WHERE dataset_id = %s AND (stored_name = %s OR original_name = %s)",
                 (int(dataset_id), file_name, file_name),
             )
-    return found
+            db_deleted = (cur.rowcount or 0) > 0
+
+    # Considerar exito si se elimino archivo o al menos el registro en DB.
+    return file_deleted or db_deleted
 
 
 def trim_dataset_audio(dataset_id: str, file_name: str, start_seconds: float, end_seconds: float) -> bool:
@@ -254,3 +306,84 @@ def get_training_csv(dataset_id: str) -> Optional[Path]:
         rows.append(f"{rel}|{info['duration']:.2f}")
     csv_path.write_text("\n".join(rows), encoding="utf-8")
     return csv_path
+
+
+def get_dataset_settings(dataset_id: str) -> dict:
+    defaults = {
+        "engine": "coqui_xtts_v2",
+        "audio_channels": "mono",
+        "sample_rate": 22050,
+        "quality_mode": "balanced",
+        "speed_rate": 1.0,
+        "precision_mode": "fp16",
+        "temperature": 0.70,
+        "top_k": 50,
+        "top_p": 0.90,
+        "noise_scale": 0.45,
+    }
+    if not HAS_DB:
+        return defaults
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT engine, audio_channels, sample_rate, quality_mode, speed_rate,
+                   precision_mode, temperature, top_k, top_p, noise_scale
+            FROM dataset_settings
+            WHERE dataset_id = %s
+            """,
+            (int(dataset_id),),
+        ).fetchone()
+        if not row:
+            return defaults
+        return {
+            "engine": row["engine"] or defaults["engine"],
+            "audio_channels": row["audio_channels"] or defaults["audio_channels"],
+            "sample_rate": int(row["sample_rate"] or defaults["sample_rate"]),
+            "quality_mode": row["quality_mode"] or defaults["quality_mode"],
+            "speed_rate": float(row["speed_rate"] or defaults["speed_rate"]),
+            "precision_mode": row["precision_mode"] or defaults["precision_mode"],
+            "temperature": float(row["temperature"] or defaults["temperature"]),
+            "top_k": int(row["top_k"] or defaults["top_k"]),
+            "top_p": float(row["top_p"] or defaults["top_p"]),
+            "noise_scale": float(row["noise_scale"] or defaults["noise_scale"]),
+        }
+
+
+def save_dataset_settings(dataset_id: str, settings: dict) -> dict:
+    if not HAS_DB:
+        return settings
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO dataset_settings (
+              dataset_id, engine, audio_channels, sample_rate, quality_mode,
+              speed_rate, precision_mode, temperature, top_k, top_p, noise_scale, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (dataset_id) DO UPDATE SET
+              engine = EXCLUDED.engine,
+              audio_channels = EXCLUDED.audio_channels,
+              sample_rate = EXCLUDED.sample_rate,
+              quality_mode = EXCLUDED.quality_mode,
+              speed_rate = EXCLUDED.speed_rate,
+              precision_mode = EXCLUDED.precision_mode,
+              temperature = EXCLUDED.temperature,
+              top_k = EXCLUDED.top_k,
+              top_p = EXCLUDED.top_p,
+              noise_scale = EXCLUDED.noise_scale,
+              updated_at = NOW()
+            """,
+            (
+                int(dataset_id),
+                settings["engine"],
+                settings["audio_channels"],
+                int(settings["sample_rate"]),
+                settings["quality_mode"],
+                float(settings["speed_rate"]),
+                settings["precision_mode"],
+                float(settings["temperature"]),
+                int(settings["top_k"]),
+                float(settings["top_p"]),
+                float(settings["noise_scale"]),
+            ),
+        )
+    return get_dataset_settings(dataset_id)

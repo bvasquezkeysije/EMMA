@@ -11,12 +11,17 @@ export const getDataset = (id) => API.get(`/datasets/${id}`).then(r => r.data);
 export const updateDataset = (id, name) => API.patch(`/datasets/${id}`, { name }).then(r => r.data);
 export const deleteDataset = (id) => API.delete(`/datasets/${id}`).then(r => r.data);
 export const splitAudios = (id, maxDuration = 12) => API.post(`/datasets/${id}/split-audios`, { max_duration: maxDuration }).then(r => r.data);
+export const splitDatasetAudioFile = (id, fileName, maxDuration = 12) =>
+  API.post(`/datasets/${id}/audios/${encodeURIComponent(fileName)}/split`, { max_duration: maxDuration }).then(r => r.data);
 export const listDatasetAudios = (id) => API.get(`/datasets/${id}/audios`).then(r => r.data);
+export const getDatasetSettings = (id) => API.get(`/datasets/${id}/settings`).then(r => r.data);
+export const saveDatasetSettings = (id, settings) => API.put(`/datasets/${id}/settings`, settings).then(r => r.data);
 export const trimDatasetAudio = (id, fileName, startSeconds, endSeconds) =>
   API.post(`/datasets/${id}/audios/${encodeURIComponent(fileName)}/trim`, { start_seconds: startSeconds, end_seconds: endSeconds }).then(r => r.data);
 export const deleteDatasetAudio = (id, fileName) =>
   API.delete(`/datasets/${id}/audios/${encodeURIComponent(fileName)}`).then(r => r.data);
-export const datasetAudioUrl = (id, fileName) => `/v1/datasets/${id}/audios/${encodeURIComponent(fileName)}/stream`;
+export const datasetAudioUrl = (id, fileName, version = "") =>
+  `/v1/datasets/${id}/audios/${encodeURIComponent(fileName)}/stream${version ? `?v=${encodeURIComponent(version)}` : ""}`;
 
 export const uploadAudio = (datasetId, files) => {
   const fd = new FormData();
@@ -29,8 +34,12 @@ export const startTraining = (body) => API.post("/training/start", body).then(r 
 export const stopTraining = () => API.post("/training/stop").then(r => r.data);
 
 export const getVoices = () => API.get("/voices/").then(r => r.data.voices);
-export const synthesize = (text, voice, language, speed) =>
-  API.post("/voices/synthesize", { text, voice, language, speed }, { responseType: "blob" }).then(r => r.data);
+export const synthesize = (text, voice, language, speed, options = {}) =>
+  API.post(
+    "/voices/synthesize",
+    { text, voice, language, speed, ...options },
+    { responseType: "blob" }
+  ).then(r => r.data);
 
 export const logout = () => API.post("/auth/logout").then(r => r.data);
 

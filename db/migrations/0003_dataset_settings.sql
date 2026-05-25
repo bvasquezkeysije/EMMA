@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS dataset_settings (
+  id BIGSERIAL PRIMARY KEY,
+  dataset_id BIGINT NOT NULL UNIQUE REFERENCES datasets(id) ON DELETE CASCADE,
+  engine VARCHAR(64) NOT NULL DEFAULT 'coqui_xtts_v2',
+  audio_channels VARCHAR(16) NOT NULL DEFAULT 'mono',
+  sample_rate INTEGER NOT NULL DEFAULT 22050,
+  quality_mode VARCHAR(32) NOT NULL DEFAULT 'balanced',
+  speed_rate DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+  precision_mode VARCHAR(16) NOT NULL DEFAULT 'fp16',
+  temperature DOUBLE PRECISION NOT NULL DEFAULT 0.70,
+  top_k INTEGER NOT NULL DEFAULT 50,
+  top_p DOUBLE PRECISION NOT NULL DEFAULT 0.90,
+  noise_scale DOUBLE PRECISION NOT NULL DEFAULT 0.45,
+  updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dataset_settings_dataset_id
+  ON dataset_settings (dataset_id);

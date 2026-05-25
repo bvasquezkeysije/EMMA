@@ -46,6 +46,8 @@ class TTSRequest(BaseModel):
     voice: str = "default"
     language: str = "es"
     speed: float = 1.0
+    engine: str = "coqui_xtts_v2"
+    dataset_id: Optional[str] = None
 
 class SplitRequest(BaseModel):
     max_duration: int = 12
@@ -54,3 +56,16 @@ class SplitRequest(BaseModel):
 class TrimRequest(BaseModel):
     start_seconds: float
     end_seconds: float
+
+
+class DatasetSettingsUpdate(BaseModel):
+    engine: str = "coqui_xtts_v2"
+    audio_channels: str = "mono"
+    sample_rate: int = 22050
+    quality_mode: str = "balanced"
+    speed_rate: float = 1.0
+    precision_mode: str = "fp16"
+    temperature: float = 0.70
+    top_k: int = 50
+    top_p: float = 0.90
+    noise_scale: float = 0.45

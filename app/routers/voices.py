@@ -25,7 +25,14 @@ def list_voices(_user: str = Depends(current_user)):
 @router.post("/synthesize")
 def synthesize(body: TTSRequest, _user: str = Depends(current_user)):
     try:
-        output = tts.synthesize(body.text, body.voice, body.language, body.speed)
+        output = tts.synthesize(
+            body.text,
+            body.voice,
+            body.language,
+            body.speed,
+            body.engine,
+            body.dataset_id,
+        )
         return FileResponse(str(output), media_type="audio/wav")
     except FileNotFoundError:
         raise HTTPException(404, "Voice model not found")

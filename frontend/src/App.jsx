@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   createDataset, deleteDataset, getDatasets, getTrainingStatus, getVoices,
   getDataset, startTraining, stopTraining, synthesize, uploadAudio,
-  updateDataset, logout, login, me, listDatasetAudios, deleteDatasetAudio,
-  trimDatasetAudio,
+  updateDataset, logout, login, me, listDatasetAudios, deleteDatasetAudio, splitDatasetAudioFile,
+  trimDatasetAudio, getDatasetSettings, saveDatasetSettings,
 } from './api'
 import './App.css'
 import logo from './assets/EMMA-LOGO.png'
@@ -42,7 +42,6 @@ export default function App() {
   const [trainingView, setTrainingView] = useState(() => localStorage.getItem('emma_training_view') || 'list')
   const [savedSelectedId, setSavedSelectedId] = useState(() => localStorage.getItem('emma_selected_id') || '')
 
-  const [files, setFiles] = useState([])
   const [localFiles, setLocalFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
@@ -52,10 +51,20 @@ export default function App() {
   const [lr, setLr] = useState('0.000005')
   const [modelName, setModelName] = useState('')
   const [status, setStatus] = useState(null)
+  const [engine, setEngine] = useState('coqui_xtts_v2')
+  const [audioChannels, setAudioChannels] = useState('mono')
+  const [sampleRate, setSampleRate] = useState(22050)
+  const [qualityMode, setQualityMode] = useState('balanced')
+  const [speedRate, setSpeedRate] = useState(1.0)
+  const [temperature, setTemperature] = useState(0.7)
+  const [topK, setTopK] = useState(50)
+  const [topP, setTopP] = useState(0.9)
+  const [noiseScale, setNoiseScale] = useState(0.45)
+  const [precisionMode, setPrecisionMode] = useState('fp16')
 
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('default')
-  const [previewText, setPreviewText] = useState('Buenos dias. Esta es una prueba de voz para EMMA.')
+  const [previewText, setPreviewText] = useState('EMMA es una plataforma para crear, ajustar y entrenar voces con inteligencia artificial. Nuestro objetivo es que puedas construir una voz clara, natural y personalizada para tus proyectos. Con tus audios, EMMA prepara el dataset, optimiza la configuracion y genera modelos listos para usar.')
   const [previewUrl, setPreviewUrl] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [ttsText, setTtsText] = useState('Hola, esta es una prueba de sintesis con EMMA.')
@@ -64,6 +73,8 @@ export default function App() {
 
   const [audioStates, setAudioStates] = useState({})
   const [localAudioStates, setLocalAudioStates] = useState({})
+  const [audioLabels, setAudioLabels] = useState({})
+  const [settingsLoadedFor, setSettingsLoadedFor] = useState(null)
 
   const getAudioState = (name) => audioStates[name] || { playing: false, currentTime: 0, duration: 0, volume: 1, trimStart: 0, trimEnd: 0 }
   const getLocalAudioState = (id) => localAudioStates[id] || { playing: false, currentTime: 0, duration: 0, volume: 1, trimStart: 0, trimEnd: 0 }
@@ -86,6 +97,12 @@ export default function App() {
   const toggleLocalPlay = (id) => {
     const el = document.getElementById(`localplay-${id}`)
     if (!el) return
+    const st = getLocalAudioState(id)
+    const sourceStart = st.sourceStart || 0
+    const sourceEnd = (st.sourceEnd ?? (sourceStart + (st.duration || 0)))
+    if (el.currentTime < sourceStart || el.currentTime > sourceEnd) {
+      el.currentTime = sourceStart
+    }
     if (el.paused) { el.play(); updLocalAudioState(id, { playing: true }) }
     else { el.pause(); updLocalAudioState(id, { playing: false }) }
   }
@@ -100,6 +117,57 @@ export default function App() {
   useEffect(() => { const t = setInterval(async () => { try { setStatus(await getTrainingStatus()) } catch {} }, 2000); return () => clearInterval(t) }, [])
   useEffect(() => { if (savedSelectedId && datasets.length) { const f = datasets.find(d => String(d.id) === String(savedSelectedId)); if (f) setSelected(f) } }, [datasets, savedSelectedId])
   useEffect(() => { if (selected?.id) loadAudios(selected.id) }, [selected])
+  useEffect(() => {
+    if (!selected?.id) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const s = await getDatasetSettings(selected.id)
+        if (cancelled || !s) return
+        setEngine(s.engine ?? 'coqui_xtts_v2')
+        setAudioChannels(s.audio_channels ?? 'mono')
+        setSampleRate(Number(s.sample_rate ?? 22050))
+        setQualityMode(s.quality_mode ?? 'balanced')
+        setSpeedRate(Number(s.speed_rate ?? 1.0))
+        setPrecisionMode(s.precision_mode ?? 'fp16')
+        setTemperature(Number(s.temperature ?? 0.7))
+        setTopK(Number(s.top_k ?? 50))
+        setTopP(Number(s.top_p ?? 0.9))
+        setNoiseScale(Number(s.noise_scale ?? 0.45))
+        setSettingsLoadedFor(String(selected.id))
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [selected?.id])
+
+  useEffect(() => {
+    if (!selected?.id) return
+    if (settingsLoadedFor !== String(selected.id)) return
+    const t = setTimeout(() => {
+      saveDatasetSettings(selected.id, {
+        engine,
+        audio_channels: audioChannels,
+        sample_rate: Number(sampleRate),
+        quality_mode: qualityMode,
+        speed_rate: Number(speedRate),
+        precision_mode: precisionMode,
+        temperature: Number(temperature),
+        top_k: Number(topK),
+        top_p: Number(topP),
+        noise_scale: Number(noiseScale),
+      }).catch(() => {})
+    }, 350)
+    return () => clearTimeout(t)
+  }, [
+    selected?.id, settingsLoadedFor,
+    engine, audioChannels, sampleRate, qualityMode, speedRate,
+    precisionMode, temperature, topK, topP, noiseScale
+  ])
+  useEffect(() => {
+    if (selected?.name && !modelName) {
+      setModelName(selected.name)
+    }
+  }, [selected?.name, modelName])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -117,27 +185,35 @@ export default function App() {
   const handleSelectTrain = (d) => { setSelected(d); setSavedSelectedId(String(d.id)); localStorage.setItem('emma_selected_id', String(d.id)); setTrainingView('train'); setModelName(d.name || '') }
 
   const handleRemoveLocalFile = (id) => {
-    let removed = null
-    setLocalFiles(prev => { const target = prev.find(x => x.id === id); if (target) { URL.revokeObjectURL(target.url); removed = target.file }; return prev.filter(x => x.id !== id) })
+    setLocalFiles(prev => {
+      const target = prev.find(x => x.id === id)
+      if (target) URL.revokeObjectURL(target.url)
+      return prev.filter(x => x.id !== id)
+    })
     setLocalAudioStates(prev => { const next = { ...prev }; delete next[id]; return next })
-    if (removed) setFiles(prev => prev.filter(f => f !== removed))
+  }
+
+  const handleEditAudioLabel = (idOrName, current) => {
+    if (!current || !String(current).trim()) return
+    setAudioLabels(prev => ({ ...prev, [idOrName]: String(current).trim() }))
   }
 
   const handleUpload = async () => {
-    if (!selected?.id || !files.length) return
+    if (!selected?.id || !localFiles.length) return
     setUploading(true); setUploadMsg('')
     try {
-      const res = await uploadAudio(selected.id, files)
+      const res = await uploadAudio(selected.id, localFiles.map(lf => lf.file))
       for (const lf of localFiles) {
         const st = getLocalAudioState(lf.id)
-        if ((st.trimStart || 0) > 0 || (st.trimEnd || 0) > 0) {
-          const end = st.trimEnd && st.trimEnd > 0 ? st.trimEnd : st.duration
-          if (end > st.trimStart) { try { await trimDatasetAudio(selected.id, lf.file.name, st.trimStart || 0, end) } catch {} }
+        const start = st.sourceStart ?? st.trimStart ?? 0
+        const end = st.sourceEnd ?? st.trimEnd ?? st.duration ?? 0
+        if (end > start) {
+          try { await trimDatasetAudio(selected.id, lf.file.name, start, end) } catch {}
         }
       }
       setUploadMsg(`Audios subidos. Total: ${res.audio_count ?? 0}`)
       localFiles.forEach(lf => URL.revokeObjectURL(lf.url))
-      setFiles([]); setLocalFiles([]); setLocalAudioStates({})
+      setLocalFiles([]); setLocalAudioStates({})
       await loadDatasets(); await loadAudios(selected.id)
       setSelected(p => (p ? { ...p, audio_count: res.audio_count ?? p.audio_count } : p))
     } catch { setUploadMsg('Error al subir audios') }
@@ -145,13 +221,88 @@ export default function App() {
   }
 
   const handleDeleteAudio = async (name) => { if (!selected?.id) return; await deleteDatasetAudio(selected.id, name); await loadAudios(selected.id) }
-  const handleTrimAudio = async (name, start, end) => { if (!selected?.id) return; try { await trimDatasetAudio(selected.id, name, start, end); setUploadMsg('Audio recortado'); await loadAudios(selected.id) } catch { setUploadMsg('Error al recortar audio') } }
+  const handleSplitAudio12 = async (name) => {
+    if (!selected?.id) return
+    try {
+      const r = await splitDatasetAudioFile(selected.id, name, 12)
+      setUploadMsg(`Audio dividido en ${r?.clip_count ?? 0} clip(s) de 12s`)
+      await loadAudios(selected.id)
+      await loadDatasets()
+    } catch {
+      setUploadMsg('Error al dividir audio')
+    }
+  }
+  const handleTrimAudio = async (name, start, end) => {
+    if (!selected?.id) return
+    const prev = getAudioState(name)
+    const newDuration = Math.max(0, (end || 0) - (start || 0))
+    updAudioState(name, {
+      currentTime: 0,
+      trimStart: 0,
+      trimEnd: newDuration > 0 ? newDuration : prev.trimEnd,
+      duration: newDuration > 0 ? newDuration : prev.duration,
+    })
+    try {
+      await trimDatasetAudio(selected.id, name, start, end)
+      setUploadMsg('Audio recortado')
+      await loadAudios(selected.id)
+    } catch {
+      updAudioState(name, prev)
+      setUploadMsg('Error al recortar audio')
+    }
+  }
+
+  const handleApplyLocalTrim = (id) => {
+    const st = getLocalAudioState(id)
+    const clipStart = st.trimStart || 0
+    const clipEnd = st.trimEnd || st.duration || 0
+    if (clipEnd <= clipStart) return
+    const baseStart = st.sourceStart || 0
+    const newSourceStart = baseStart + clipStart
+    const newSourceEnd = baseStart + clipEnd
+    const newDuration = newSourceEnd - newSourceStart
+    const wf = Array.isArray(st.waveform) ? st.waveform : []
+    let newWaveform = wf
+    if (wf.length && st.duration) {
+      const i0 = Math.max(0, Math.floor((clipStart / st.duration) * wf.length))
+      const i1 = Math.min(wf.length, Math.ceil((clipEnd / st.duration) * wf.length))
+      newWaveform = wf.slice(i0, Math.max(i0 + 1, i1))
+    }
+    updLocalAudioState(id, {
+      sourceStart: newSourceStart,
+      sourceEnd: newSourceEnd,
+      duration: newDuration,
+      currentTime: 0,
+      trimStart: 0,
+      trimEnd: newDuration,
+      waveform: newWaveform,
+      playing: false,
+    })
+    const el = document.getElementById(`localplay-${id}`)
+    if (el) {
+      el.pause()
+      el.currentTime = newSourceStart
+    }
+    setUploadMsg('Recorte local aplicado')
+  }
 
   const handleStartTrain = async () => {
     if (!selected?.id) return
     await startTraining({ dataset_id: selected.id, language: 'es', epochs: Number(epochs), learning_rate: Number(lr), output_model_name: modelName.trim() || selected.name || 'modelo' })
   }
-  const handlePreview = async () => { if (!previewText.trim()) return; setPreviewLoading(true); try { setPreviewUrl(URL.createObjectURL(await synthesize(previewText, voice || 'default', 'es', 1.0))) } finally { setPreviewLoading(false) } }
+  const handlePreview = async () => {
+    if (!previewText.trim()) return
+    setPreviewLoading(true)
+    try {
+      setPreviewUrl(URL.createObjectURL(await synthesize(
+        previewText,
+        voice || 'default',
+        'es',
+        Number(speedRate) || 1.0,
+        { engine, dataset_id: selected?.id ? String(selected.id) : null }
+      )))
+    } finally { setPreviewLoading(false) }
+  }
   const handleSynthesize = async () => { if (!ttsText.trim()) return; setTtsLoading(true); try { setTtsUrl(URL.createObjectURL(await synthesize(ttsText, voice || 'default', 'es', 1.0))) } finally { setTtsLoading(false) } }
 
   const handleLogin = async (user, pass) => { const u = await login(user, pass); setUsername(u?.username || user); await loadDatasets(); await loadVoices() }
@@ -183,11 +334,22 @@ export default function App() {
           {active === 'training' && trainingView === 'train' && selected && (
             <TrainingTrainModule
               selected={selected} setTrainingView={setTrainingView} setSelected={setSelected} setSavedSelectedId={setSavedSelectedId} setUploadMsg={setUploadMsg}
-              files={files} setFiles={setFiles} localFiles={localFiles} setLocalFiles={setLocalFiles} setLocalAudioStates={setLocalAudioStates}
+              localFiles={localFiles} setLocalFiles={setLocalFiles} setLocalAudioStates={setLocalAudioStates}
               getLocalAudioState={getLocalAudioState} updLocalAudioState={updLocalAudioState} toggleLocalPlay={toggleLocalPlay} handleRemoveLocalFile={handleRemoveLocalFile}
+              handleApplyLocalTrim={handleApplyLocalTrim}
               handleUpload={handleUpload} uploading={uploading} uploadMsg={uploadMsg}
               audios={audios} getAudioState={getAudioState} togglePlay={togglePlay} updAudioState={updAudioState} handleDeleteAudio={handleDeleteAudio} handleTrimAudio={handleTrimAudio}
-              voice={voice} setVoice={setVoice} voices={voices} previewText={previewText} setPreviewText={setPreviewText} handlePreview={handlePreview} previewLoading={previewLoading} previewUrl={previewUrl}
+              handleSplitAudio12={handleSplitAudio12}
+              audioLabels={audioLabels} onEditAudioLabel={handleEditAudioLabel}
+              engine={engine} setEngine={setEngine} audioChannels={audioChannels} setAudioChannels={setAudioChannels} sampleRate={sampleRate} setSampleRate={setSampleRate}
+              qualityMode={qualityMode} setQualityMode={setQualityMode}
+              speedRate={speedRate} setSpeedRate={setSpeedRate}
+              temperature={temperature} setTemperature={setTemperature}
+              topK={topK} setTopK={setTopK}
+              topP={topP} setTopP={setTopP}
+              noiseScale={noiseScale} setNoiseScale={setNoiseScale}
+              precisionMode={precisionMode} setPrecisionMode={setPrecisionMode}
+              previewText={previewText} setPreviewText={setPreviewText} handlePreview={handlePreview} previewLoading={previewLoading} previewUrl={previewUrl}
               modelName={modelName} setModelName={setModelName} epochs={epochs} setEpochs={setEpochs} lr={lr} setLr={setLr} handleStartTrain={handleStartTrain} status={status} stopTraining={stopTraining}
             />
           )}
