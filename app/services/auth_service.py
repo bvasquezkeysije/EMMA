@@ -4,14 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-try:
-    import psycopg
-    HAS_DB = True
-except ImportError:
-    HAS_DB = False
+from app.db import HAS_DB, get_connection
 
-
-DB_DSN = "postgresql://postgres:postgres@localhost:5432/emma-db"
 SESSION_TTL_HOURS = 3
 
 ADMIN_USER = "admin"
@@ -34,19 +28,16 @@ class AuthService:
         if not HAS_DB:
             return False
         try:
-            with psycopg.connect(DB_DSN, autocommit=True) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT password_hash, is_active FROM users WHERE username = %s LIMIT 1",
-                        (username,),
-                    )
-                    row = cur.fetchone()
-                    if not row:
-                        return False
-                    password_hash, is_active = row
-                    if not is_active:
-                        return False
-                    return str(password_hash or "") == password
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT password_hash, is_active FROM users WHERE username = %s LIMIT 1",
+                    (username,),
+                ).fetchone()
+                if not row:
+                    return False
+                if not row["is_active"]:
+                    return False
+                return str(row["password_hash"] or "") == password
         except Exception:
             return False
 

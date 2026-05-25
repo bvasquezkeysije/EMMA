@@ -51,7 +51,7 @@ def update_dataset(dataset_id: str, body: DatasetUpdate, _user: str = Depends(cu
 
 @router.post("/{dataset_id}/upload")
 async def upload_audio(dataset_id: str, files: list[UploadFile] = File(...), _user: str = Depends(current_user)):
-    d = DATASETS_DIR / dataset_id / "audio"
+    d = dataset_service._resolve_audio_dir(DATASETS_DIR / dataset_id)
     d.mkdir(parents=True, exist_ok=True)
     paths = []
     for f in files:
@@ -74,7 +74,7 @@ def list_dataset_audios(dataset_id: str, _user: str = Depends(current_user)):
 
 @router.get("/{dataset_id}/audios/{file_name}/stream")
 def stream_dataset_audio(dataset_id: str, file_name: str, _user: str = Depends(current_user)):
-    fp = DATASETS_DIR / dataset_id / "audio" / Path(file_name).name
+    fp = dataset_service._resolve_audio_dir(DATASETS_DIR / dataset_id) / Path(file_name).name
     if not fp.exists() or not fp.is_file():
         raise HTTPException(404, "Audio not found")
     return FileResponse(str(fp))
