@@ -1,13 +1,24 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Depends
 from app.models.schemas import TrainRequest, TrainStatus
 from app.services.train_service import trainer
 from app.services.dataset_service import get_dataset
+from app.services.auth_service import auth_service
 
 router = APIRouter(prefix="/v1/training", tags=["Training"])
 
 
+def current_user(request: Request) -> str:
+    sid = request.cookies.get("emma_sid")
+    if not sid:
+        raise HTTPException(status_code=401, detail="No autenticado")
+    username = auth_service.get_session_user(sid)
+    if not username:
+        raise HTTPException(status_code=401, detail="Sesion expirada")
+    return username
+
+
 @router.post("/start")
-def start_training(body: TrainRequest):
+def start_training(body: TrainRequest, _user: str = Depends(current_user)):
     ds = get_dataset(body.dataset_id)
     if not ds:
         raise HTTPException(404, "Dataset not found")
@@ -25,11 +36,11 @@ def start_training(body: TrainRequest):
 
 
 @router.get("/status")
-def training_status() -> TrainStatus:
+def training_status(_user: str = Depends(current_user)) -> TrainStatus:
     return trainer.status
 
 
 @router.post("/stop")
-def stop_training():
+def stop_training(_user: str = Depends(current_user)):
     trainer.stop()
     return {"ok": True}

@@ -1,9 +1,22 @@
 from pydantic import BaseModel
 from typing import Optional
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    username: str
+    session_hours: int
+
+
 class DatasetCreate(BaseModel):
     name: str
     language: str = "es"
+
+class DatasetUpdate(BaseModel):
+    name: str
 
 class DatasetResponse(BaseModel):
     id: str
@@ -36,3 +49,8 @@ class TTSRequest(BaseModel):
 
 class SplitRequest(BaseModel):
     max_duration: int = 12
+
+
+class TrimRequest(BaseModel):
+    start_seconds: float
+    end_seconds: float

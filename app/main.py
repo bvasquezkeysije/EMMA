@@ -14,7 +14,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import datasets, training, voices
+from app.routers import datasets, training, voices, auth
+app.include_router(auth.router)
 app.include_router(datasets.router)
 app.include_router(training.router)
 app.include_router(voices.router)
@@ -27,19 +28,26 @@ def health():
 
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 frontend_index = frontend_dir / "index.html"
+assets_dir = frontend_dir / "assets"
 
 if frontend_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
+    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    @app.middleware("http")
-    async def spa_middleware(request, call_next):
-        response = await call_next(request)
-        if response.status_code == 404:
-            path = request.url.path
-            if path.startswith("/v1/") or path == "/health" or path.startswith("/assets/"):
-                return JSONResponse({"detail": "Not Found"}, status_code=404)
-            file_path = frontend_dir / path.lstrip("/")
-            if file_path.exists() and file_path.is_file():
-                return FileResponse(str(file_path))
-            return FileResponse(str(frontend_index))
-        return response
+    @app.get("/favicon.svg")
+    def favicon():
+        return FileResponse(str(frontend_dir / "favicon.svg"))
+
+    @app.get("/icons.svg")
+    def icons():
+        return FileResponse(str(frontend_dir / "icons.svg"))
+
+    @app.get("/")
+    def root():
+        return FileResponse(str(frontend_index))
+
+    @app.exception_handler(404)
+    async def spa_404(request, exc):
+        path = request.url.path
+        if path.startswith("/v1/") or path == "/health" or path.startswith("/assets/"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return FileResponse(str(frontend_index))
