@@ -299,11 +299,22 @@ export default function App() {
         voice || 'default',
         'es',
         Number(speedRate) || 1.0,
-        { engine, dataset_id: selected?.id ? String(selected.id) : null }
+        {
+          engine,
+          dataset_id: selected?.id ? String(selected.id) : null,
+          quality_mode: qualityMode,
+          temperature: Number(temperature),
+          top_k: Number(topK),
+          top_p: Number(topP),
+          noise_scale: Number(noiseScale),
+          precision_mode: precisionMode,
+        }
       )))
+    } catch (e) {
+      alert('Error al generar audio: ' + (e.message || e))
     } finally { setPreviewLoading(false) }
   }
-  const handleSynthesize = async () => { if (!ttsText.trim()) return; setTtsLoading(true); try { setTtsUrl(URL.createObjectURL(await synthesize(ttsText, voice || 'default', 'es', 1.0))) } finally { setTtsLoading(false) } }
+  const handleSynthesize = async () => { if (!ttsText.trim()) return; setTtsLoading(true); try { setTtsUrl(URL.createObjectURL(await synthesize(ttsText, voice || 'default', 'es', Number(speedRate) || 1.0, { engine, quality_mode: qualityMode, temperature: Number(temperature), top_k: Number(topK), top_p: Number(topP), noise_scale: Number(noiseScale), precision_mode: precisionMode }))) } catch (e) { alert('Error al generar audio: ' + (e.message || e)) } finally { setTtsLoading(false) } }
 
   const handleLogin = async (user, pass) => { const u = await login(user, pass); setUsername(u?.username || user); await loadDatasets(); await loadVoices() }
   const handleLogout = async () => { try { await logout() } catch {}; window.location.reload() }

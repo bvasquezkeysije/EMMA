@@ -48,6 +48,12 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
     engine: str = "coqui_xtts_v2"
     dataset_id: Optional[str] = None
+    quality_mode: str = "balanced"
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    noise_scale: Optional[float] = None
+    precision_mode: str = "fp16"
 
 class SplitRequest(BaseModel):
     max_duration: int = 12

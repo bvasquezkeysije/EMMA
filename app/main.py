@@ -7,6 +7,10 @@ from fastapi.staticfiles import StaticFiles
 
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
+ffmpeg_bin = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages" / "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe" / "ffmpeg-8.0.1-full_build" / "bin"
+if ffmpeg_bin.exists():
+    os.environ["PATH"] = str(ffmpeg_bin) + os.pathsep + os.environ.get("PATH", "")
+
 app = FastAPI(title="EMMA TTS", version="2.0.0")
 
 app.add_middleware(

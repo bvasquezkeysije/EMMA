@@ -1,10 +1,44 @@
-import math
-import struct
-import wave
+import os
 from pathlib import Path
 from typing import Optional
 
 from app.config import MODELS_DIR, OUTPUT_DIR, DATASETS_DIR
+
+
+def _patch_torchaudio_load_global():
+    import torch
+    import torchaudio
+    if getattr(torchaudio.load, "_emma_patched", False):
+        return
+    import soundfile as sf
+
+    def _patched_torchaudio_load(
+        uri,
+        frame_offset: int = 0,
+        num_frames: int = -1,
+        normalize: bool = True,
+        channels_first: bool = True,
+        format=None,
+        buffer_size: int = 4096,
+        backend=None,
+    ):
+        data, sr = sf.read(str(uri), dtype="float32", always_2d=True)
+        if frame_offset > 0:
+            data = data[frame_offset:]
+        if num_frames is not None and num_frames > -1:
+            data = data[:num_frames]
+        ten = torch.from_numpy(data).transpose(0, 1)  # [ch, time]
+        if not channels_first:
+            ten = ten.transpose(0, 1)
+        if not normalize:
+            ten = (ten * 32767.0).to(torch.int16)
+        return ten, sr
+
+    _patched_torchaudio_load._emma_patched = True
+    torchaudio.load = _patched_torchaudio_load
+
+
+_patch_torchaudio_load_global()
 
 
 class TTSEngine:
@@ -13,6 +47,9 @@ class TTSEngine:
         self._coqui_model = None
         self._f5_model = None
         self._f5_transcript_cache: dict[str, str] = {}
+
+    def _ensure_audio_patch(self):
+        _patch_torchaudio_load_global()
 
     def _load_model(self, voice: str):
         if voice == "default":
@@ -23,51 +60,6 @@ class TTSEngine:
             raise FileNotFoundError(f"Model not found: {voice}")
         self._loaded_voice = voice
 
-    def _generate_fallback_wav(self, text: str, output: Path, speed: float) -> Path:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        sr = 22050
-        speed = max(0.7, min(1.4, float(speed or 1.0)))
-        base_char_ms = int(95 / speed)
-        pause_ms = int(28 / speed)
-        amp = 0.23
-
-        def write_sine(frames: bytearray, freq_hz: float, ms: int):
-            n = int(sr * (ms / 1000.0))
-            for i in range(n):
-                env = min(1.0, i / max(1, int(0.02 * sr)))
-                env *= min(1.0, (n - i) / max(1, int(0.02 * sr)))
-                sample = amp * env * math.sin(2.0 * math.pi * freq_hz * (i / sr))
-                frames.extend(struct.pack("<h", int(max(-1.0, min(1.0, sample)) * 32767)))
-
-        def write_silence(frames: bytearray, ms: int):
-            n = int(sr * (ms / 1000.0))
-            frames.extend(b"\x00\x00" * n)
-
-        frames = bytearray()
-        text = (text or "").strip()[:600]
-        if not text:
-            text = "audio de prueba emma"
-
-        for ch in text.lower():
-            if ch in " .,;:!?":
-                write_silence(frames, pause_ms * 2)
-                continue
-            if ch in "aeiouáéíóú":
-                freq = 210.0
-            elif ch.isdigit():
-                freq = 235.0
-            else:
-                freq = 180.0
-            write_sine(frames, freq, base_char_ms)
-            write_silence(frames, pause_ms)
-
-        with wave.open(str(output), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sr)
-            wf.writeframes(bytes(frames))
-        return output
-
     def _resolve_dataset_ref_audio(self, dataset_id: Optional[str]) -> Optional[Path]:
         if not dataset_id:
             return None
@@ -77,25 +69,62 @@ class TTSEngine:
         wavs = sorted([p for p in wavs_dir.glob("*.wav") if p.is_file()], key=lambda x: x.name.lower())
         return wavs[0] if wavs else None
 
-    def _ensure_coqui(self):
+    def _ensure_coqui(self, precision_mode: str = "fp16"):
         if self._coqui_model is None:
+            import torch
+            from functools import wraps
+            import torch.serialization as ts
+            from TTS.tts.configs.xtts_config import XttsConfig
+            from TTS.tts.models.xtts import XttsAudioConfig
+
+            # Compatibilidad PyTorch>=2.6 con checkpoints de Coqui XTTS.
+            os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+            os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
+            ts.add_safe_globals([XttsConfig, XttsAudioConfig])
+
+            if not getattr(torch.load, "_emma_patched", False):
+                _orig_torch_load = torch.load
+
+                @wraps(_orig_torch_load)
+                def _patched_torch_load(*args, **kwargs):
+                    kwargs.setdefault("weights_only", False)
+                    return _orig_torch_load(*args, **kwargs)
+
+                _patched_torch_load._emma_patched = True
+                torch.load = _patched_torch_load
+
+            self._ensure_audio_patch()
+
             from TTS.api import TTS
-            self._coqui_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=True)
+            use_gpu = torch.cuda.is_available()
+            self._coqui_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=use_gpu)
         return self._coqui_model
 
     def _ensure_f5(self):
         if self._f5_model is None:
+            self._ensure_audio_patch()
             from f5_tts.api import F5TTS
             self._f5_model = F5TTS()
         return self._f5_model
 
-    def _coqui_xtts_synthesize(self, text: str, language: str, speed: float, output: Path, dataset_id: Optional[str]) -> Path:
+    def _coqui_xtts_synthesize(
+        self,
+        text: str,
+        language: str,
+        speed: float,
+        output: Path,
+        dataset_id: Optional[str],
+        temperature: Optional[float],
+        top_k: Optional[int],
+        top_p: Optional[float],
+        noise_scale: Optional[float],
+    ) -> Path:
         ref_audio = self._resolve_dataset_ref_audio(dataset_id)
         if ref_audio is None:
             raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
         model = self._ensure_coqui()
         output.parent.mkdir(parents=True, exist_ok=True)
-        model.tts_to_file(
+        kwargs = dict(
             text=text,
             speaker_wav=str(ref_audio),
             language=language or "es",
@@ -103,9 +132,36 @@ class TTSEngine:
             file_path=str(output),
             split_sentences=True,
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if top_k is not None:
+            kwargs["top_k"] = top_k
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        # XTTS (segun version de TTS/transformers) puede no aceptar noise_scale.
+        # Se evita pasarlo para prevenir 500 por kwargs no soportados.
+        try:
+            model.tts_to_file(**kwargs)
+        except Exception as e:
+            # Fallback compatible: reintento solo con argumentos base.
+            base_kwargs = dict(
+                text=text,
+                speaker_wav=str(ref_audio),
+                language=language or "es",
+                speed=float(speed or 1.0),
+                file_path=str(output),
+                split_sentences=True,
+            )
+            model.tts_to_file(**base_kwargs)
         return output
 
-    def _f5_synthesize(self, text: str, speed: float, output: Path, dataset_id: Optional[str]) -> Path:
+    def _f5_synthesize(
+        self,
+        text: str,
+        speed: float,
+        output: Path,
+        dataset_id: Optional[str],
+    ) -> Path:
         ref_audio = self._resolve_dataset_ref_audio(dataset_id)
         if ref_audio is None:
             raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
@@ -116,7 +172,6 @@ class TTSEngine:
             ref_text = model.transcribe(str(ref_audio)).strip()
             self._f5_transcript_cache[key] = ref_text or "Referencia de voz."
         output.parent.mkdir(parents=True, exist_ok=True)
-        # F5 escribe directamente a output.
         model.infer(
             ref_file=str(ref_audio),
             ref_text=ref_text or "Referencia de voz.",
@@ -135,6 +190,11 @@ class TTSEngine:
         speed: float = 1.0,
         engine: str = "coqui_xtts_v2",
         dataset_id: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        noise_scale: Optional[float] = None,
+        precision_mode: str = "fp16",
     ) -> Path:
         target_voice = voice or "default"
         if self._loaded_voice != target_voice:
@@ -144,18 +204,17 @@ class TTSEngine:
                 target_voice = "default"
                 self._loaded_voice = "default"
 
-        safe_name = str(abs(hash((text, target_voice, language, round(float(speed or 1.0), 2), engine, dataset_id or ""))))
+        import hashlib
+        raw = f"{text}|{target_voice}|{language}|{round(float(speed or 1.0), 2)}|{engine}|{dataset_id or ''}|{temperature}|{top_k}|{top_p}|{noise_scale}"
+        safe_name = hashlib.md5(raw.encode()).hexdigest()[:16]
         output = OUTPUT_DIR / f"preview_{safe_name}.wav"
+
         chosen = (engine or "").strip().lower()
-        try:
-            if chosen == "f5_tts":
-                return self._f5_synthesize(text, speed, output, dataset_id)
-            if chosen == "coqui_xtts_v2":
-                return self._coqui_xtts_synthesize(text, language, speed, output, dataset_id)
-        except Exception:
-            # Fallback solo si falla el motor real para no romper UX.
-            return self._generate_fallback_wav(text, output, speed)
-        return self._generate_fallback_wav(text, output, speed)
+        if chosen == "f5_tts":
+            return self._f5_synthesize(text, speed, output, dataset_id)
+        if chosen == "coqui_xtts_v2":
+            return self._coqui_xtts_synthesize(text, language, speed, output, dataset_id, temperature, top_k, top_p, noise_scale)
+        raise ValueError(f"Motor TTS desconocido: '{engine}'. Usa 'coqui_xtts_v2' o 'f5_tts'.")
 
     def list_voices(self) -> list[str]:
         voices = []

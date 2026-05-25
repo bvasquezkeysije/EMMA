@@ -32,6 +32,11 @@ def synthesize(body: TTSRequest, _user: str = Depends(current_user)):
             body.speed,
             body.engine,
             body.dataset_id,
+            body.temperature,
+            body.top_k,
+            body.top_p,
+            body.noise_scale,
+            body.precision_mode,
         )
         return FileResponse(str(output), media_type="audio/wav")
     except FileNotFoundError:
