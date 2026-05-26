@@ -48,9 +48,47 @@ def _resolve_audio_dir(dataset_root: Path) -> Path:
     return wavs_dir
 
 
+def _sync_dataset_audio_rows(dataset_id: str):
+    if not HAS_DB:
+        return
+    audio_dir = _resolve_audio_dir(DATASETS_DIR / str(dataset_id))
+    existing_files = {p.name for p in audio_dir.glob("*") if p.is_file() and p.suffix.lower() in (".wav", ".mp3", ".m4a", ".flac", ".ogg")}
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT stored_name FROM dataset_audios WHERE dataset_id = %s",
+            (int(dataset_id),),
+        ).fetchall()
+        db_files = {r["stored_name"] for r in rows}
+
+        # Eliminar filas huerfanas (archivo ya no existe).
+        for missing in sorted(db_files - existing_files):
+            conn.execute(
+                "DELETE FROM dataset_audios WHERE dataset_id = %s AND stored_name = %s",
+                (int(dataset_id), missing),
+            )
+
+        # Insertar archivos presentes que no estan indexados en DB.
+        for fname in sorted(existing_files - db_files):
+            fp = audio_dir / fname
+            info = analyze_audio(fp)
+            conn.execute(
+                """
+                INSERT INTO dataset_audios (dataset_id, stored_name, original_name, size_bytes, duration_seconds)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (int(dataset_id), fname, fname, fp.stat().st_size, info["duration"]),
+            )
+
+
 def list_datasets() -> list[dict]:
     if not HAS_DB:
         return []
+    # Mantener conteos correctos cuando hubo borrados manuales de archivos.
+    with get_connection() as conn:
+        ds_ids = conn.execute("SELECT id FROM datasets").fetchall()
+    for d in ds_ids:
+        _sync_dataset_audio_rows(str(d["id"]))
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT d.*, COUNT(da.id) AS audio_count
@@ -65,6 +103,7 @@ def list_datasets() -> list[dict]:
 def get_dataset(dataset_id: str) -> Optional[dict]:
     if not HAS_DB:
         return None
+    _sync_dataset_audio_rows(dataset_id)
     with get_connection() as conn:
         row = conn.execute("""
             SELECT d.*, COUNT(da.id) AS audio_count
@@ -215,6 +254,7 @@ def split_single_dataset_audio(dataset_id: str, file_name: str, max_duration: in
 def list_dataset_audios(dataset_id: str) -> list[dict]:
     if not HAS_DB:
         return []
+    _sync_dataset_audio_rows(dataset_id)
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id, stored_name, original_name, size_bytes, duration_seconds, created_at FROM dataset_audios WHERE dataset_id = %s ORDER BY created_at DESC",
@@ -323,30 +363,33 @@ def get_dataset_settings(dataset_id: str) -> dict:
     }
     if not HAS_DB:
         return defaults
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT engine, audio_channels, sample_rate, quality_mode, speed_rate,
-                   precision_mode, temperature, top_k, top_p, noise_scale
-            FROM dataset_settings
-            WHERE dataset_id = %s
-            """,
-            (int(dataset_id),),
-        ).fetchone()
-        if not row:
-            return defaults
-        return {
-            "engine": row["engine"] or defaults["engine"],
-            "audio_channels": row["audio_channels"] or defaults["audio_channels"],
-            "sample_rate": int(row["sample_rate"] or defaults["sample_rate"]),
-            "quality_mode": row["quality_mode"] or defaults["quality_mode"],
-            "speed_rate": float(row["speed_rate"] or defaults["speed_rate"]),
-            "precision_mode": row["precision_mode"] or defaults["precision_mode"],
-            "temperature": float(row["temperature"] or defaults["temperature"]),
-            "top_k": int(row["top_k"] or defaults["top_k"]),
-            "top_p": float(row["top_p"] or defaults["top_p"]),
-            "noise_scale": float(row["noise_scale"] or defaults["noise_scale"]),
-        }
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT engine, audio_channels, sample_rate, quality_mode, speed_rate,
+                       precision_mode, temperature, top_k, top_p, noise_scale
+                FROM dataset_settings
+                WHERE dataset_id = %s
+                """,
+                (int(dataset_id),),
+            ).fetchone()
+            if not row:
+                return defaults
+            return {
+                "engine": row["engine"] or defaults["engine"],
+                "audio_channels": row["audio_channels"] or defaults["audio_channels"],
+                "sample_rate": int(row["sample_rate"] or defaults["sample_rate"]),
+                "quality_mode": row["quality_mode"] or defaults["quality_mode"],
+                "speed_rate": float(row["speed_rate"] or defaults["speed_rate"]),
+                "precision_mode": row["precision_mode"] or defaults["precision_mode"],
+                "temperature": float(row["temperature"] or defaults["temperature"]),
+                "top_k": int(row["top_k"] or defaults["top_k"]),
+                "top_p": float(row["top_p"] or defaults["top_p"]),
+                "noise_scale": float(row["noise_scale"] or defaults["noise_scale"]),
+            }
+    except Exception:
+        return defaults
 
 
 def save_dataset_settings(dataset_id: str, settings: dict) -> dict:

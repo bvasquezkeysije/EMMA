@@ -29,9 +29,15 @@ export const uploadAudio = (datasetId, files) => {
   return API.post(`/datasets/${datasetId}/upload`, fd).then(r => r.data);
 };
 
-export const getTrainingStatus = () => API.get("/training/status").then(r => r.data);
+export const getTrainingStatus = (datasetId = null) =>
+  API.get("/training/status", { params: datasetId ? { dataset_id: String(datasetId) } : {} }).then(r => r.data);
 export const startTraining = (body) => API.post("/training/start", body).then(r => r.data);
-export const stopTraining = () => API.post("/training/stop").then(r => r.data);
+export const stopTraining = (datasetId = null) =>
+  API.post("/training/stop", null, { params: datasetId ? { dataset_id: String(datasetId) } : {} }).then(r => r.data);
+export const getTrainedModels = (datasetId = null) =>
+  API.get("/training/models", { params: datasetId ? { dataset_id: String(datasetId) } : {} }).then(r => r.data);
+export const getAllTrainedModels = () =>
+  API.get("/training/models").then(r => r.data);
 
 export const getVoices = () => API.get("/voices/").then(r => r.data.voices);
 export const synthesize = (text, voice, language, speed, options = {}) =>

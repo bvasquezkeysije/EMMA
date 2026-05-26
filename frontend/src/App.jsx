@@ -4,6 +4,7 @@ import {
   getDataset, startTraining, stopTraining, synthesize, uploadAudio,
   updateDataset, logout, login, me, listDatasetAudios, deleteDatasetAudio, splitDatasetAudioFile,
   trimDatasetAudio, getDatasetSettings, saveDatasetSettings,
+  getTrainedModels, getAllTrainedModels,
 } from './api'
 import './App.css'
 import logo from './assets/EMMA-LOGO.png'
@@ -25,6 +26,16 @@ const modules = [
 const PAGE_SIZE = 12
 
 export default function App() {
+  const formatModelStamp = (d = new Date()) => {
+    const yy = String(d.getFullYear()).slice(-2)
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mi = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    return `${yy}${mm}${dd}.${hh}${mi}${ss}`
+  }
+
   const [active, setActive] = useState(() => localStorage.getItem('emma_active') || 'training')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [openProfile, setOpenProfile] = useState(false)
@@ -51,6 +62,7 @@ export default function App() {
   const [lr, setLr] = useState('0.000005')
   const [modelName, setModelName] = useState('')
   const [status, setStatus] = useState(null)
+  const [trainedModels, setTrainedModels] = useState([])
   const [engine, setEngine] = useState('coqui_xtts_v2')
   const [audioChannels, setAudioChannels] = useState('mono')
   const [sampleRate, setSampleRate] = useState(22050)
@@ -63,6 +75,7 @@ export default function App() {
   const [precisionMode, setPrecisionMode] = useState('fp16')
 
   const [voices, setVoices] = useState([])
+  const [voiceModels, setVoiceModels] = useState([])
   const [voice, setVoice] = useState('default')
   const [previewText, setPreviewText] = useState('EMMA es una plataforma para crear, ajustar y entrenar voces con inteligencia artificial. Nuestro objetivo es que puedas construir una voz clara, natural y personalizada para tus proyectos. Con tus audios, EMMA prepara el dataset, optimiza la configuracion y genera modelos listos para usar.')
   const [previewUrl, setPreviewUrl] = useState('')
@@ -108,15 +121,86 @@ export default function App() {
   }
 
   const loadDatasets = async () => { try { setDatasets(Array.isArray(await getDatasets()) ? await getDatasets() : []) } catch { setDatasets([]) } }
-  const loadVoices = async () => { try { const l = await getVoices(); setVoices(l || []); if (l?.length) setVoice(l[0]) } catch { setVoices([]) } }
+  const loadVoices = async () => {
+    try {
+      const [l, all] = await Promise.all([getVoices(), getAllTrainedModels().catch(() => [])])
+      setVoices(l || [])
+      const cards = Array.isArray(all) ? all : []
+      setVoiceModels(cards)
+      if (cards.length) setVoice(prev => prev && cards.some(m => m.name === prev) ? prev : cards[0].name)
+      else if (l?.length) setVoice(prev => prev && l.includes(prev) ? prev : l[0])
+    } catch {
+      setVoices([])
+      setVoiceModels([])
+    }
+  }
   const loadAudios = async (id) => { try { setAudios(await listDatasetAudios(id) || []) } catch { setAudios([]) } }
+  const loadTrainedModels = async (id) => {
+    try {
+      const all = await getAllTrainedModels()
+      const dsid = String(id)
+      setTrainedModels((Array.isArray(all) ? all : []).filter(m => String(m?.dataset_id || '') === dsid))
+    } catch {
+      try {
+        setTrainedModels(await getTrainedModels(id) || [])
+      } catch {
+        setTrainedModels([])
+      }
+    }
+  }
 
   useEffect(() => { (async () => { try { const u = await me(); setUsername(u?.username || 'admin'); await loadDatasets(); await loadVoices() } catch { setUsername('') } finally { setAuthLoading(false) } })() }, [])
   useEffect(() => { localStorage.setItem('emma_active', active) }, [active])
   useEffect(() => { localStorage.setItem('emma_training_view', trainingView) }, [trainingView])
-  useEffect(() => { const t = setInterval(async () => { try { setStatus(await getTrainingStatus()) } catch {} }, 2000); return () => clearInterval(t) }, [])
+  useEffect(() => {
+    setStatus({ running: false, current_epoch: 0, total_epochs: 0, progress: 0, loss: null, message: '' })
+    const t = setInterval(async () => {
+      try {
+        setStatus(await getTrainingStatus(selected?.id || null))
+      } catch (e) {
+        const msg = e?.response?.data?.detail || ''
+        if (msg) {
+          setStatus(prev => ({ ...(prev || {}), running: false, message: msg }))
+        }
+      }
+    }, 2000)
+    return () => clearInterval(t)
+  }, [selected?.id])
+
+  useEffect(() => {
+    if (!selected?.id) return
+    const msg = String(status?.message || '')
+    if (!status?.running && /completado|modelo listo/i.test(msg)) {
+      const mm = msg.match(/modelo listo:\s*(.+)\s*$/i)
+      const modelFromMsg = mm?.[1]?.trim()
+      if (modelFromMsg) {
+        setTrainedModels(prev => {
+          if (prev.some(x => String(x?.name || '').toLowerCase() === modelFromMsg.toLowerCase())) return prev
+          return [{
+            name: modelFromMsg,
+            dataset_id: String(selected.id),
+            engine,
+            epochs: Number(epochs),
+            learning_rate: Number(lr),
+            audio_count: Number(selected.audio_count || 0),
+            duration_seconds: 0,
+            status: 'ready',
+            created_at: new Date().toISOString(),
+            has_embeddings: true,
+          }, ...prev]
+        })
+      }
+      loadTrainedModels(selected.id)
+    }
+  }, [status?.running, status?.message, selected?.id, engine, epochs, lr, selected?.audio_count])
+
+  useEffect(() => {
+    if (!selected?.id || active !== 'training' || trainingView !== 'train') return
+    const t = setInterval(() => { loadTrainedModels(selected.id) }, 3000)
+    return () => clearInterval(t)
+  }, [selected?.id, active, trainingView])
   useEffect(() => { if (savedSelectedId && datasets.length) { const f = datasets.find(d => String(d.id) === String(savedSelectedId)); if (f) setSelected(f) } }, [datasets, savedSelectedId])
-  useEffect(() => { if (selected?.id) loadAudios(selected.id) }, [selected])
+  useEffect(() => { if (selected?.id) { loadAudios(selected.id); loadTrainedModels(selected.id) } }, [selected])
   useEffect(() => {
     if (!selected?.id) return
     let cancelled = false
@@ -288,7 +372,37 @@ export default function App() {
 
   const handleStartTrain = async () => {
     if (!selected?.id) return
-    await startTraining({ dataset_id: selected.id, language: 'es', epochs: Number(epochs), learning_rate: Number(lr), output_model_name: modelName.trim() || selected.name || 'modelo' })
+    const base = (modelName.trim() || selected.name || 'modelo').replace(/\.+$/g, '')
+    const stampedName = `${base}-${formatModelStamp()}`
+    setModelName(stampedName)
+    setStatus({
+      running: true,
+      current_epoch: 0,
+      total_epochs: Number(epochs) || 0,
+      progress: 0,
+      loss: null,
+      message: 'Iniciando entrenamiento...'
+    })
+    try {
+      await startTraining({
+        dataset_id: selected.id,
+        language: 'es',
+        epochs: Number(epochs),
+        learning_rate: Number(lr),
+        output_model_name: stampedName
+      })
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e?.message || 'Error al iniciar entrenamiento'
+      setStatus({
+        running: false,
+        current_epoch: 0,
+        total_epochs: Number(epochs) || 0,
+        progress: 0,
+        loss: null,
+        message: String(msg)
+      })
+      alert(`No se pudo iniciar entrenamiento: ${msg}`)
+    }
   }
   const handlePreview = async () => {
     if (!previewText.trim()) return
@@ -361,13 +475,15 @@ export default function App() {
               noiseScale={noiseScale} setNoiseScale={setNoiseScale}
               precisionMode={precisionMode} setPrecisionMode={setPrecisionMode}
               previewText={previewText} setPreviewText={setPreviewText} handlePreview={handlePreview} previewLoading={previewLoading} previewUrl={previewUrl}
-              modelName={modelName} setModelName={setModelName} epochs={epochs} setEpochs={setEpochs} lr={lr} setLr={setLr} handleStartTrain={handleStartTrain} status={status} stopTraining={stopTraining}
+              modelName={modelName} setModelName={setModelName} epochs={epochs} setEpochs={setEpochs} lr={lr} setLr={setLr} handleStartTrain={handleStartTrain} status={status} stopTraining={() => stopTraining(selected?.id || null)}
+              trainedModels={trainedModels}
             />
           )}
 
           {active === 'voices' && (
             <VoicesModule
-              voices={voices} voice={voice} setVoice={setVoice}
+              models={voiceModels.length ? voiceModels : (voices || []).map(v => ({ name: v, engine: 'coqui_xtts_v2', status: 'ready' }))}
+              voice={voice} setVoice={setVoice}
               ttsText={ttsText} setTtsText={setTtsText}
               handleSynthesize={handleSynthesize} ttsLoading={ttsLoading} ttsUrl={ttsUrl}
             />

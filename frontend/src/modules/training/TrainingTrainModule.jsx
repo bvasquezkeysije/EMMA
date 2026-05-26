@@ -72,13 +72,25 @@ export default function TrainingTrainModule(props) {
     engine, setEngine, audioChannels, setAudioChannels, sampleRate, setSampleRate,
     qualityMode, setQualityMode, speedRate, setSpeedRate, temperature, setTemperature, topK, setTopK, topP, setTopP, noiseScale, setNoiseScale, precisionMode, setPrecisionMode,
     previewText, setPreviewText, handlePreview, previewLoading, previewUrl,
-    modelName, setModelName, epochs, setEpochs, lr, setLr, handleStartTrain, status, stopTraining,
+    modelName, setModelName, epochs, setEpochs, lr, setLr, handleStartTrain, status, stopTraining, trainedModels,
   } = props
 
   const canvasRefs = useRef({})
   const dragRef = useRef(null)
   const [editingNameKey, setEditingNameKey] = useState(null)
   const [editingNameValue, setEditingNameValue] = useState('')
+  const [showTrainingStatus, setShowTrainingStatus] = useState(false)
+  const running = Boolean(status?.running)
+  const completed = !running && /completado|modelo listo/i.test(String(status?.message || ''))
+  const progressPct = running ? Math.round((status?.progress || 0) * 100) : (completed ? 100 : 0)
+  const progressLabel = running
+    ? `Epoca ${status?.current_epoch || 0} / ${status?.total_epochs || 0}`
+    : (completed ? 'Entrenamiento completado' : 'Sin entrenamiento activo')
+  const statusMessage = status?.message || (running ? '-' : '-')
+
+  useEffect(() => {
+    if (running) setShowTrainingStatus(true)
+  }, [running])
 
   const drawOne = useCallback((id, st) => {
     const c = canvasRefs.current[id]
@@ -432,17 +444,47 @@ export default function TrainingTrainModule(props) {
           <div><label>Learning rate</label><input value={lr} onChange={e => setLr(e.target.value)} /></div>
         </div>
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn dark" onClick={handleStartTrain} disabled={status?.running}>Iniciar Entrenamiento</button>
+          <button className="btn dark" onClick={() => { setShowTrainingStatus(true); handleStartTrain() }} disabled={status?.running}>Iniciar Entrenamiento</button>
         </div>
-        <div className="progress-box">
-          <div className="progress-meta"><span>{status?.running ? `Epoca ${status.current_epoch} / ${status.total_epochs}` : 'Sin entrenamiento activo'}</span><b>{Math.round((status?.progress || 0) * 100)}%</b></div>
-          <div className="progress-track"><div className="progress-fill" style={{ width: `${Math.round((status?.progress || 0) * 100)}%` }} /></div>
-          <div className="progress-actions">
-            <button className="btn danger" onClick={stopTraining} disabled={!status?.running}>Cancelar</button>
+        {showTrainingStatus && (
+          <div className="progress-box">
+            <div className="progress-meta"><span>{progressLabel}</span><b>{progressPct}%</b></div>
+            <div className="progress-track"><div className="progress-fill" style={{ width: `${progressPct}%` }} /></div>
+            <div className="progress-actions">
+              <button className="btn danger" onClick={stopTraining} disabled={!running}>Cancelar</button>
+            </div>
+            {running && status?.loss !== null && status?.loss !== undefined && <p className="muted" style={{ marginTop: 4 }}>Loss: {status.loss}</p>}
+            <p className="muted" style={{ marginTop: 4 }}>{statusMessage}</p>
           </div>
-          {status?.loss !== null && status?.loss !== undefined && <p className="muted" style={{ marginTop: 4 }}>Loss: {status.loss}</p>}
-          <p className="muted" style={{ marginTop: 4 }}>{status?.message || '-'}</p>
-        </div>
+        )}
+      </section>
+
+      <section className="card">
+        <h3>Modelos entrenados en el dataset</h3>
+        <p className="muted">Dataset actual: <b>{selected?.name}</b> ({selected?.id})</p>
+        {(!trainedModels || trainedModels.length === 0) && <p className="muted">Aun no hay modelos entrenados para este dataset.</p>}
+        {!!trainedModels?.length && (
+          <div className="audio-list models-grid">
+            {trainedModels.map((m) => (
+              <div key={m.name} className="card audio-item">
+                <div className="row between">
+                  <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                    <span className="mini dark" style={{ width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M12 3a4 4 0 00-4 4v5a4 4 0 008 0V7a4 4 0 00-4-4z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M5 11a7 7 0 0014 0M12 18v3M9 21h6" />
+                      </svg>
+                    </span>
+                    <div>
+                      <b>{m.name}</b>
+                      <p className="muted" style={{ margin: 0 }}>Motor: {m.engine} | Estado: {m.status}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </>
   )

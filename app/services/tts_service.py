@@ -1,6 +1,9 @@
 import os
+import json
 from pathlib import Path
 from typing import Optional
+
+import torch
 
 from app.config import MODELS_DIR, OUTPUT_DIR, DATASETS_DIR
 
@@ -69,6 +72,34 @@ class TTSEngine:
         wavs = sorted([p for p in wavs_dir.glob("*.wav") if p.is_file()], key=lambda x: x.name.lower())
         return wavs[0] if wavs else None
 
+    def _resolve_profile(self, voice: str) -> Optional[dict]:
+        if not voice or voice == "default":
+            return None
+        model_dir = MODELS_DIR / voice
+        manifest = model_dir / "emma_model.json"
+        if not manifest.exists():
+            return None
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            refs = data.get("references") or []
+            if refs:
+                ref_name = refs[0].get("file")
+                ref_path = model_dir / "refs" / str(ref_name)
+                if ref_path.exists():
+                    data["_ref_audio_path"] = str(ref_path)
+            emb = data.get("embeddings") or {}
+            gpt_name = emb.get("gpt_cond_latent")
+            spk_name = emb.get("speaker_embedding")
+            if gpt_name and spk_name:
+                gpt_file = model_dir / "embeddings" / str(gpt_name)
+                spk_file = model_dir / "embeddings" / str(spk_name)
+                if gpt_file.exists() and spk_file.exists():
+                    data["_gpt_cond_latent_path"] = str(gpt_file)
+                    data["_speaker_embedding_path"] = str(spk_file)
+            return data
+        except Exception:
+            return None
+
     def _ensure_coqui(self, precision_mode: str = "fp16"):
         if self._coqui_model is None:
             import torch
@@ -114,24 +145,35 @@ class TTSEngine:
         speed: float,
         output: Path,
         dataset_id: Optional[str],
+        ref_audio_override: Optional[Path],
         temperature: Optional[float],
         top_k: Optional[int],
         top_p: Optional[float],
         noise_scale: Optional[float],
+        gpt_cond_latent_path: Optional[Path] = None,
+        speaker_embedding_path: Optional[Path] = None,
     ) -> Path:
-        ref_audio = self._resolve_dataset_ref_audio(dataset_id)
-        if ref_audio is None:
-            raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
         model = self._ensure_coqui()
         output.parent.mkdir(parents=True, exist_ok=True)
+
+        use_latents = bool(gpt_cond_latent_path and speaker_embedding_path and gpt_cond_latent_path.exists() and speaker_embedding_path.exists())
         kwargs = dict(
             text=text,
-            speaker_wav=str(ref_audio),
             language=language or "es",
             speed=float(speed or 1.0),
             file_path=str(output),
             split_sentences=True,
         )
+
+        if use_latents:
+            kwargs["speaker_wav"] = None
+            kwargs["gpt_cond_latent"] = torch.load(gpt_cond_latent_path, map_location="cpu")
+            kwargs["speaker_embedding"] = torch.load(speaker_embedding_path, map_location="cpu")
+        else:
+            ref_audio = ref_audio_override or self._resolve_dataset_ref_audio(dataset_id)
+            if ref_audio is None:
+                raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
+            kwargs["speaker_wav"] = str(ref_audio)
         if temperature is not None:
             kwargs["temperature"] = temperature
         if top_k is not None:
@@ -142,8 +184,11 @@ class TTSEngine:
         # Se evita pasarlo para prevenir 500 por kwargs no soportados.
         try:
             model.tts_to_file(**kwargs)
-        except Exception as e:
+        except Exception:
             # Fallback compatible: reintento solo con argumentos base.
+            ref_audio = ref_audio_override or self._resolve_dataset_ref_audio(dataset_id)
+            if ref_audio is None:
+                raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
             base_kwargs = dict(
                 text=text,
                 speaker_wav=str(ref_audio),
@@ -161,8 +206,9 @@ class TTSEngine:
         speed: float,
         output: Path,
         dataset_id: Optional[str],
+        ref_audio_override: Optional[Path],
     ) -> Path:
-        ref_audio = self._resolve_dataset_ref_audio(dataset_id)
+        ref_audio = ref_audio_override or self._resolve_dataset_ref_audio(dataset_id)
         if ref_audio is None:
             raise RuntimeError("No hay audios WAV en el dataset para clonar voz (carpeta wavs).")
         model = self._ensure_f5()
@@ -209,11 +255,29 @@ class TTSEngine:
         safe_name = hashlib.md5(raw.encode()).hexdigest()[:16]
         output = OUTPUT_DIR / f"preview_{safe_name}.wav"
 
+        profile = self._resolve_profile(target_voice)
+        profile_ref_audio = None
+        profile_gpt_cond = None
+        profile_spk_emb = None
+        if profile:
+            if profile.get("_ref_audio_path"):
+                profile_ref_audio = Path(profile["_ref_audio_path"])
+            if profile.get("_gpt_cond_latent_path") and profile.get("_speaker_embedding_path"):
+                profile_gpt_cond = Path(profile["_gpt_cond_latent_path"])
+                profile_spk_emb = Path(profile["_speaker_embedding_path"])
+            dataset_id = profile.get("dataset_id") or dataset_id
+            if engine in ("", None, "default", "coqui_xtts_v2"):
+                engine = profile.get("engine", "coqui_xtts_v2")
+
         chosen = (engine or "").strip().lower()
         if chosen == "f5_tts":
-            return self._f5_synthesize(text, speed, output, dataset_id)
+            return self._f5_synthesize(text, speed, output, dataset_id, profile_ref_audio)
         if chosen == "coqui_xtts_v2":
-            return self._coqui_xtts_synthesize(text, language, speed, output, dataset_id, temperature, top_k, top_p, noise_scale)
+            return self._coqui_xtts_synthesize(
+                text, language, speed, output, dataset_id, profile_ref_audio,
+                temperature, top_k, top_p, noise_scale,
+                profile_gpt_cond, profile_spk_emb
+            )
         raise ValueError(f"Motor TTS desconocido: '{engine}'. Usa 'coqui_xtts_v2' o 'f5_tts'.")
 
     def list_voices(self) -> list[str]:

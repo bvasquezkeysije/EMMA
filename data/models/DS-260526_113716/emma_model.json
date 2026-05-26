@@ -1,0 +1,55 @@
+{
+  "type": "emma_voice_profile_v1",
+  "model_name": "DS-260526_113716",
+  "dataset_id": "6",
+  "language": "es",
+  "engine": "coqui_xtts_v2",
+  "epochs": 30,
+  "learning_rate": 5e-06,
+  "created_at": "2026-05-26T11:38:09.130762",
+  "audio_count": 9,
+  "total_duration_seconds": 108.0,
+  "references": [
+    {
+      "file": "DS1_part0001.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0002.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0003.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0004.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0005.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0006.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0007.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0008.wav",
+      "duration_seconds": 12.0
+    },
+    {
+      "file": "DS1_part0009.wav",
+      "duration_seconds": 12.0
+    }
+  ],
+  "embeddings": {
+    "gpt_cond_latent": "gpt_cond_latent.pt",
+    "speaker_embedding": "speaker_embedding.pt"
+  },
+  "status": "ready"
+}

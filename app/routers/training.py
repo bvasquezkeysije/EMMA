@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request, Depends
 from app.models.schemas import TrainRequest, TrainStatus
 from app.services.train_service import trainer
@@ -33,14 +35,22 @@ def start_training(body: TrainRequest, _user: str = Depends(current_user)):
         return {"ok": True}
     except RuntimeError as e:
         raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo iniciar entrenamiento: {e}")
 
 
 @router.get("/status")
-def training_status(_user: str = Depends(current_user)) -> TrainStatus:
-    return trainer.status
+def training_status(dataset_id: Optional[str] = None, _user: str = Depends(current_user)) -> TrainStatus:
+    return trainer.status(dataset_id)
 
 
 @router.post("/stop")
-def stop_training(_user: str = Depends(current_user)):
-    trainer.stop()
+def stop_training(dataset_id: Optional[str] = None, _user: str = Depends(current_user)):
+    trainer.stop(dataset_id)
     return {"ok": True}
+
+
+@router.get("/models")
+def list_models(dataset_id: Optional[str] = None, _user: str = Depends(current_user)):
+    from app.services.train_service import list_trained_models
+    return list_trained_models(dataset_id)

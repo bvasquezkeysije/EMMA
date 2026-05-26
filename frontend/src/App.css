@@ -105,7 +105,10 @@ th, td { border-bottom: 1px solid #ececec; padding: 10px 12px; text-align: left;
 .kpi span { color: #666; font-size: 13px; }
 
 .audio-list { display: grid; gap: 8px; }
+.models-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .audio-item { border-radius: 12px; background: #fff; padding: 10px 12px; display: grid; gap: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.model-card-btn { width: 100%; border: 1px solid #ddd; text-align: left; cursor: pointer; }
+.model-card-btn.active { border-color: #171717; box-shadow: inset 0 0 0 1px #171717; }
 .audio-item-top { display: flex; align-items: center; justify-content: space-between; }
 .audio-name { font-size: 13px; font-weight: 600; color: #222; word-break: break-all; }
 .audio-name-btn {
@@ -158,4 +161,5 @@ th, td { border-bottom: 1px solid #ececec; padding: 10px 12px; text-align: left;
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 20; }
   .sidebar.closed { transform: translateX(-100%); width: 290px; }
   .grid2, .grid3, .kpis { grid-template-columns: 1fr; }
+  .models-grid { grid-template-columns: 1fr; }
 }
